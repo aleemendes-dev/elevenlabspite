@@ -11,14 +11,12 @@
     body{
       min-height: 100vh;
       font-family: Arial, Helvetica, sans-serif;
-
       background-image: url("Tadayuki.png");
       background-size: cover;
       background-position: center;
       background-repeat: no-repeat;
     }
 
-    /* Overlay sem roubar clique */
     body::before{
       content:"";
       position: fixed;
@@ -27,39 +25,66 @@
       pointer-events: none;
     }
 
-    /* Avatar (GIF) no canto inferior direito */
+    /* Avatar – canto superior direito */
     #piteAvatar {
       position: fixed;
+      top: 24px;
       right: 24px;
-      bottom: 170px; /* fica acima do widget */
       width: 170px;
       height: auto;
       z-index: 2147483646;
-      pointer-events: none; /* não atrapalha clique no widget */
+      pointer-events: none;
       user-select: none;
       -webkit-user-drag: none;
       filter: drop-shadow(0 10px 18px rgba(0,0,0,0.25));
     }
 
-    /* Widget no canto */
+    /* Botão para ativar captura de áudio da aba */
+    #btnAudioAba {
+      position: fixed;
+      top: 24px;
+      left: 24px;
+      z-index: 2147483647;
+      padding: 10px 14px;
+      border: 0;
+      border-radius: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      background: rgba(255,255,255,0.92);
+      box-shadow: 0 10px 18px rgba(0,0,0,0.15);
+    }
+
+    #btnAudioAba small{
+      display:block;
+      font-weight: 400;
+      margin-top: 4px;
+      opacity: .75;
+    }
+
+    /* Widget – canto inferior direito */
     elevenlabs-convai{
       position: fixed !important;
       right: 24px;
       bottom: 24px;
       z-index: 2147483647;
       display: block !important;
-
       min-width: 340px;
       min-height: 120px;
-
       pointer-events: auto;
     }
 
     @media (max-width: 480px){
       #piteAvatar{
+        top: 12px;
         right: 12px;
-        bottom: 155px;
         width: 140px;
+      }
+
+      #btnAudioAba{
+        top: 12px;
+        left: 12px;
+        padding: 10px 12px;
+        border-radius: 12px;
       }
 
       elevenlabs-convai{
@@ -73,28 +98,35 @@
 
 <body>
 
-  <!-- Avatar: parado (piscando) por padrão -->
+  <!-- Avatar padrão (parado) -->
   <img id="piteAvatar" src="pitepiscando.gif" alt="Avatar PITE" />
 
+  <!-- Botão obrigatório para iniciar captura do áudio da aba -->
+  <button id="btnAudioAba" type="button">
+    🎧 Ativar detecção do áudio da aba
+    <small>Escolha “Esta guia” e marque “Compartilhar áudio”.</small>
+  </button>
+
+  <!-- Widget ElevenLabs -->
   <elevenlabs-convai agent-id="agent_7501kc0b1hvaeymt039z1862ym4f"></elevenlabs-convai>
 
   <script src="https://unpkg.com/@elevenlabs/convai-widget-embed" defer></script>
 
   <script>
-    // Arquivos
     const GIF_FALANDO = "pitebocaberta.gif";
-    const GIF_PARADO  = "piteestatico.jpeg";
+    const GIF_PARADO  = "pitepiscando.gif";
 
-    // Ajuste fino
-    const LIMIAR_VOLUME = 22;   // aumenta se estiver trocando por barulho; diminui se não ativar
-    const HOLD_MS = 400;        // mantém "falando" um pouco após o som cair (evita piscar)
+    // Ajustes finos
+    const LIMIAR_VOLUME = 18; // se não ativar, diminua (ex: 12). Se ativar com ruído, aumente (ex: 25)
+    const HOLD_MS = 450;      // quanto tempo manter “falando” após o áudio cair
 
     const avatar = document.getElementById("piteAvatar");
+    const btn = document.getElementById("btnAudioAba");
 
     let audioContext, analyser, dataArray;
-    let iniciado = false;
     let falando = false;
     let ultimoSomEm = 0;
+    let iniciado = false;
 
     function setAvatarFalando(isFalando){
       if (isFalando === falando) return;
@@ -102,36 +134,54 @@
       avatar.src = falando ? GIF_FALANDO : GIF_PARADO;
     }
 
-    async function iniciarDeteccaoAudio(){
+    async function iniciarCapturaDaAba(){
       if (iniciado) return;
       iniciado = true;
 
       try {
-        // precisa de interação do usuário (o clique no widget serve)
-        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        // Captura o áudio da aba (o usuário precisa escolher “Esta guia” e marcar “Compartilhar áudio”)
+        const stream = await navigator.mediaDevices.getDisplayMedia({
+          video: false,
+          audio: true
+        });
 
-        // Captura mic (mesma permissão que o agente usa)
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
         const source = audioContext.createMediaStreamSource(stream);
 
         analyser = audioContext.createAnalyser();
         analyser.fftSize = 512;
-
         source.connect(analyser);
+
         dataArray = new Uint8Array(analyser.frequencyBinCount);
 
+        // Se o usuário parar de compartilhar, volta ao parado
+        stream.getTracks().forEach(track => {
+          track.onended = () => {
+            iniciado = false;
+            setAvatarFalando(false);
+            btn.disabled = false;
+            btn.innerHTML = `🎧 Ativar detecção do áudio da aba
+              <small>Escolha “Esta guia” e marque “Compartilhar áudio”.</small>`;
+          };
+        });
+
+        btn.disabled = true;
+        btn.textContent = "✅ Detecção ativa (áudio da aba)";
+
         monitorarVolume();
+
       } catch (err) {
-        console.error("Não foi possível iniciar detecção de áudio:", err);
-        // Se não tiver permissão, deixa parado
-        setAvatarFalando(false);
+        iniciado = false;
+        console.error("Falha ao capturar áudio da aba:", err);
+        alert("Para funcionar, selecione 'Esta guia/aba' e marque 'Compartilhar áudio'.");
       }
     }
 
     function monitorarVolume(){
+      if (!analyser) return;
+
       analyser.getByteFrequencyData(dataArray);
 
-      // média simples do espectro
       let soma = 0;
       for (let i = 0; i < dataArray.length; i++) soma += dataArray[i];
       const volume = soma / dataArray.length;
@@ -142,7 +192,6 @@
         ultimoSomEm = agora;
         setAvatarFalando(true);
       } else {
-        // segura um pouco para não ficar trocando rápido
         if (falando && (agora - ultimoSomEm) > HOLD_MS) {
           setAvatarFalando(false);
         }
@@ -151,16 +200,7 @@
       requestAnimationFrame(monitorarVolume);
     }
 
-    // Usa clique em qualquer lugar da página (inclui o widget) como gatilho
-    // Se quiser ser mais restrito: só iniciar quando clicar no widget.
-    document.addEventListener("click", () => {
-      iniciarDeteccaoAudio();
-    }, { once: true });
-
-    // (Opcional) Se você quiser iniciar SOMENTE quando clicar no widget:
-    // document.addEventListener("click", (e) => {
-    //   if (e.target.closest("elevenlabs-convai")) iniciarDeteccaoAudio();
-    // }, { once: true });
+    btn.addEventListener("click", iniciarCapturaDaAba);
   </script>
 
 </body>

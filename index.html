@@ -32,19 +32,19 @@
       right: 24px;
       width: 170px;
       height: auto;
-      z-index: 2147483646;
+      z-index: 2147483000;
       pointer-events: none;
       user-select: none;
       -webkit-user-drag: none;
       filter: drop-shadow(0 10px 18px rgba(0,0,0,0.25));
     }
 
-    /* Botão */
+    /* Botão: sempre acima de tudo */
     #btnAudioAba {
       position: fixed;
       top: 24px;
       left: 24px;
-      z-index: 2147483647;
+      z-index: 9999999999; /* acima de qualquer iframe/widget */
       padding: 10px 14px;
       border: 0;
       border-radius: 12px;
@@ -52,6 +52,8 @@
       cursor: pointer;
       background: rgba(255,255,255,0.92);
       box-shadow: 0 10px 18px rgba(0,0,0,0.15);
+      pointer-events: auto !important;
+      -webkit-tap-highlight-color: transparent;
     }
     #btnAudioAba small{
       display:block;
@@ -60,12 +62,11 @@
       opacity: .75;
     }
 
-    /* Widget – canto inferior direito */
     elevenlabs-convai{
       position: fixed !important;
       right: 24px;
       bottom: 24px;
-      z-index: 2147483647;
+      z-index: 2147482000;
       display: block !important;
       min-width: 340px;
       min-height: 120px;
@@ -78,7 +79,7 @@
       elevenlabs-convai{ right: 12px; bottom: 12px; min-width: 280px; }
     }
 
-    /* (opcional) vídeo oculto, só pra manter permissões estáveis em alguns browsers */
+    /* vídeo oculto (mantém stream vivo em alguns browsers) */
     #hiddenVideo {
       position: fixed;
       width: 1px;
@@ -96,11 +97,10 @@
 
   <button id="btnAudioAba" type="button">
     🎧 Ativar detecção do áudio da aba
-    <small>Escolha “Esta guia” e marque “Compartilhar áudio”.</small>
+    <small>Selecione “Esta guia” e marque “Compartilhar áudio”.</small>
   </button>
 
   <elevenlabs-convai agent-id="agent_7501kc0b1hvaeymt039z1862ym4f"></elevenlabs-convai>
-
   <video id="hiddenVideo" muted playsinline></video>
 
   <script src="https://unpkg.com/@elevenlabs/convai-widget-embed" defer></script>
@@ -119,7 +119,10 @@
     let audioContext, analyser, dataArray;
     let falando = false;
     let ultimoSomEm = 0;
-    let iniciado = false;
+
+    // estado da captura
+    let streamAtual = null;
+    let rodando = false;
 
     function setAvatarFalando(isFalando){
       if (isFalando === falando) return;
@@ -127,8 +130,37 @@
       avatar.src = falando ? GIF_FALANDO : GIF_PARADO;
     }
 
+    function atualizarBotao(){
+      if (rodando) {
+        btn.innerHTML = `⛔ Parar detecção (áudio da aba)
+          <small>Clique para encerrar o compartilhamento.</small>`;
+      } else {
+        btn.innerHTML = `🎧 Ativar detecção do áudio da aba
+          <small>Selecione “Esta guia” e marque “Compartilhar áudio”.</small>`;
+      }
+    }
+
+    function pararCaptura(){
+      rodando = false;
+      setAvatarFalando(false);
+
+      if (streamAtual) {
+        streamAtual.getTracks().forEach(t => t.stop());
+        streamAtual = null;
+      }
+      if (audioContext) {
+        try { audioContext.close(); } catch(e) {}
+        audioContext = null;
+      }
+      analyser = null;
+      dataArray = null;
+
+      hiddenVideo.srcObject = null;
+      atualizarBotao();
+    }
+
     function monitorarVolume(){
-      if (!analyser) return;
+      if (!rodando || !analyser) return;
 
       analyser.getByteFrequencyData(dataArray);
 
@@ -149,25 +181,29 @@
     }
 
     async function iniciarCapturaDaAba(){
-      if (iniciado) return;
-      iniciado = true;
+      // toggle: se já está rodando, para
+      if (rodando) {
+        pararCaptura();
+        return;
+      }
 
       try {
-        // ✅ Importante: pedir VIDEO + AUDIO (Chrome/Edge costumam exigir isso para liberar áudio da guia)
+        // ✅ pedir VIDEO + AUDIO aumenta a chance de liberar “áudio da guia”
         const stream = await navigator.mediaDevices.getDisplayMedia({
           video: true,
           audio: true
         });
 
-        // Alguns browsers só liberam áudio se o usuário marcar “Compartilhar áudio”
+        // se não veio áudio, não serve
         if (!stream.getAudioTracks() || stream.getAudioTracks().length === 0) {
           stream.getTracks().forEach(t => t.stop());
-          iniciado = false;
           alert("Você compartilhou sem áudio. Selecione “Esta guia” e marque “Compartilhar áudio”.");
           return;
         }
 
-        // (Opcional) manter o stream “vivo” associando a um vídeo oculto
+        streamAtual = stream;
+
+        // manter stream vivo
         hiddenVideo.srcObject = stream;
         hiddenVideo.play().catch(() => {});
 
@@ -180,35 +216,29 @@
 
         dataArray = new Uint8Array(analyser.frequencyBinCount);
 
-        // Se parar de compartilhar, resetar
+        // se o usuário parar o compartilhamento na UI do browser
         stream.getTracks().forEach(track => {
           track.onended = () => {
-            iniciado = false;
-            setAvatarFalando(false);
-            btn.disabled = false;
-            btn.innerHTML = `🎧 Ativar detecção do áudio da aba
-              <small>Escolha “Esta guia” e marque “Compartilhar áudio”.</small>`;
+            pararCaptura();
           };
         });
 
-        btn.disabled = true;
-        btn.textContent = "✅ Detecção ativa (áudio da aba)";
+        rodando = true;
+        atualizarBotao();
         monitorarVolume();
 
       } catch (err) {
-        iniciado = false;
         console.error("Falha ao capturar áudio da aba:", err);
-
-        // Mensagem mais objetiva (sem aquele alerta genérico)
         alert(
           "Não foi possível capturar o áudio da aba.\n\n" +
           "✅ Use Chrome/Edge no computador.\n" +
-          "✅ Clique no botão e selecione “Esta guia”.\n" +
+          "✅ Selecione “Esta guia”.\n" +
           "✅ Marque “Compartilhar áudio”."
         );
       }
     }
 
+    atualizarBotao();
     btn.addEventListener("click", iniciarCapturaDaAba);
   </script>
 </body>

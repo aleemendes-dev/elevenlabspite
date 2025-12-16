@@ -39,7 +39,7 @@
       filter: drop-shadow(0 10px 18px rgba(0,0,0,0.25));
     }
 
-    /* Botão para ativar captura de áudio da aba */
+    /* Botão */
     #btnAudioAba {
       position: fixed;
       top: 24px;
@@ -53,7 +53,6 @@
       background: rgba(255,255,255,0.92);
       box-shadow: 0 10px 18px rgba(0,0,0,0.15);
     }
-
     #btnAudioAba small{
       display:block;
       font-weight: 400;
@@ -74,41 +73,35 @@
     }
 
     @media (max-width: 480px){
-      #piteAvatar{
-        top: 12px;
-        right: 12px;
-        width: 140px;
-      }
+      #piteAvatar{ top: 12px; right: 12px; width: 140px; }
+      #btnAudioAba{ top: 12px; left: 12px; padding: 10px 12px; }
+      elevenlabs-convai{ right: 12px; bottom: 12px; min-width: 280px; }
+    }
 
-      #btnAudioAba{
-        top: 12px;
-        left: 12px;
-        padding: 10px 12px;
-        border-radius: 12px;
-      }
-
-      elevenlabs-convai{
-        right: 12px;
-        bottom: 12px;
-        min-width: 280px;
-      }
+    /* (opcional) vídeo oculto, só pra manter permissões estáveis em alguns browsers */
+    #hiddenVideo {
+      position: fixed;
+      width: 1px;
+      height: 1px;
+      opacity: 0;
+      pointer-events: none;
+      left: -9999px;
+      top: -9999px;
     }
   </style>
 </head>
 
 <body>
-
-  <!-- Avatar padrão (parado) -->
   <img id="piteAvatar" src="pitepiscando.gif" alt="Avatar PITE" />
 
-  <!-- Botão obrigatório para iniciar captura do áudio da aba -->
   <button id="btnAudioAba" type="button">
     🎧 Ativar detecção do áudio da aba
     <small>Escolha “Esta guia” e marque “Compartilhar áudio”.</small>
   </button>
 
-  <!-- Widget ElevenLabs -->
   <elevenlabs-convai agent-id="agent_7501kc0b1hvaeymt039z1862ym4f"></elevenlabs-convai>
+
+  <video id="hiddenVideo" muted playsinline></video>
 
   <script src="https://unpkg.com/@elevenlabs/convai-widget-embed" defer></script>
 
@@ -116,12 +109,12 @@
     const GIF_FALANDO = "pitebocaberta.gif";
     const GIF_PARADO  = "pitepiscando.gif";
 
-    // Ajustes finos
-    const LIMIAR_VOLUME = 18; // se não ativar, diminua (ex: 12). Se ativar com ruído, aumente (ex: 25)
-    const HOLD_MS = 450;      // quanto tempo manter “falando” após o áudio cair
+    const LIMIAR_VOLUME = 18;
+    const HOLD_MS = 450;
 
     const avatar = document.getElementById("piteAvatar");
     const btn = document.getElementById("btnAudioAba");
+    const hiddenVideo = document.getElementById("hiddenVideo");
 
     let audioContext, analyser, dataArray;
     let falando = false;
@@ -132,49 +125,6 @@
       if (isFalando === falando) return;
       falando = isFalando;
       avatar.src = falando ? GIF_FALANDO : GIF_PARADO;
-    }
-
-    async function iniciarCapturaDaAba(){
-      if (iniciado) return;
-      iniciado = true;
-
-      try {
-        // Captura o áudio da aba (o usuário precisa escolher “Esta guia” e marcar “Compartilhar áudio”)
-        const stream = await navigator.mediaDevices.getDisplayMedia({
-          video: false,
-          audio: true
-        });
-
-        audioContext = new (window.AudioContext || window.webkitAudioContext)();
-        const source = audioContext.createMediaStreamSource(stream);
-
-        analyser = audioContext.createAnalyser();
-        analyser.fftSize = 512;
-        source.connect(analyser);
-
-        dataArray = new Uint8Array(analyser.frequencyBinCount);
-
-        // Se o usuário parar de compartilhar, volta ao parado
-        stream.getTracks().forEach(track => {
-          track.onended = () => {
-            iniciado = false;
-            setAvatarFalando(false);
-            btn.disabled = false;
-            btn.innerHTML = `🎧 Ativar detecção do áudio da aba
-              <small>Escolha “Esta guia” e marque “Compartilhar áudio”.</small>`;
-          };
-        });
-
-        btn.disabled = true;
-        btn.textContent = "✅ Detecção ativa (áudio da aba)";
-
-        monitorarVolume();
-
-      } catch (err) {
-        iniciado = false;
-        console.error("Falha ao capturar áudio da aba:", err);
-        alert("Para funcionar, selecione 'Esta guia/aba' e marque 'Compartilhar áudio'.");
-      }
     }
 
     function monitorarVolume(){
@@ -191,17 +141,75 @@
       if (volume > LIMIAR_VOLUME) {
         ultimoSomEm = agora;
         setAvatarFalando(true);
-      } else {
-        if (falando && (agora - ultimoSomEm) > HOLD_MS) {
-          setAvatarFalando(false);
-        }
+      } else if (falando && (agora - ultimoSomEm) > HOLD_MS) {
+        setAvatarFalando(false);
       }
 
       requestAnimationFrame(monitorarVolume);
     }
 
+    async function iniciarCapturaDaAba(){
+      if (iniciado) return;
+      iniciado = true;
+
+      try {
+        // ✅ Importante: pedir VIDEO + AUDIO (Chrome/Edge costumam exigir isso para liberar áudio da guia)
+        const stream = await navigator.mediaDevices.getDisplayMedia({
+          video: true,
+          audio: true
+        });
+
+        // Alguns browsers só liberam áudio se o usuário marcar “Compartilhar áudio”
+        if (!stream.getAudioTracks() || stream.getAudioTracks().length === 0) {
+          stream.getTracks().forEach(t => t.stop());
+          iniciado = false;
+          alert("Você compartilhou sem áudio. Selecione “Esta guia” e marque “Compartilhar áudio”.");
+          return;
+        }
+
+        // (Opcional) manter o stream “vivo” associando a um vídeo oculto
+        hiddenVideo.srcObject = stream;
+        hiddenVideo.play().catch(() => {});
+
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        const source = audioContext.createMediaStreamSource(stream);
+
+        analyser = audioContext.createAnalyser();
+        analyser.fftSize = 512;
+        source.connect(analyser);
+
+        dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+        // Se parar de compartilhar, resetar
+        stream.getTracks().forEach(track => {
+          track.onended = () => {
+            iniciado = false;
+            setAvatarFalando(false);
+            btn.disabled = false;
+            btn.innerHTML = `🎧 Ativar detecção do áudio da aba
+              <small>Escolha “Esta guia” e marque “Compartilhar áudio”.</small>`;
+          };
+        });
+
+        btn.disabled = true;
+        btn.textContent = "✅ Detecção ativa (áudio da aba)";
+        monitorarVolume();
+
+      } catch (err) {
+        iniciado = false;
+        console.error("Falha ao capturar áudio da aba:", err);
+
+        // Mensagem mais objetiva (sem aquele alerta genérico)
+        alert(
+          "Não foi possível capturar o áudio da aba.\n\n" +
+          "✅ Use Chrome/Edge no computador.\n" +
+          "✅ Clique no botão e selecione “Esta guia”.\n" +
+          "✅ Marque “Compartilhar áudio”."
+        );
+      }
+    }
+
     btn.addEventListener("click", iniciarCapturaDaAba);
   </script>
-
 </body>
 </html>

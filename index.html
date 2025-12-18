@@ -96,11 +96,15 @@
     let micCtx = null;
     let micSource = null;
     let micProc = null;
+    let micZeroGain = null;
 
     // player
     let audioCtx = null;
     let speakingTimeout = null;
     let rodando = false;
+
+    // ✅ fila de reprodução do áudio do agente (evita sobreposição)
+    let nextPlayTime = 0;
 
     function setStatus(t){ statusEl.textContent = "Status: " + t; }
 
@@ -133,6 +137,7 @@
       return u8;
     }
 
+    // ✅ PLAY com fila (scheduling) para não tocar chunks ao mesmo tempo
     function playPcm16(u8, sampleRate = 16000) {
       if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
@@ -143,12 +148,22 @@
       const buf = audioCtx.createBuffer(1, f32.length, sampleRate);
       buf.copyToChannel(f32, 0);
 
+      const now = audioCtx.currentTime;
+      if (nextPlayTime < now) nextPlayTime = now; // se houve gap, recomeça fila
+
       const src = audioCtx.createBufferSource();
       src.buffer = buf;
       src.connect(audioCtx.destination);
-      src.start();
 
+      src.start(nextPlayTime);
+      nextPlayTime += buf.duration;
+
+      // mantém o avatar "falando" enquanto tiver áudio na fila
       setSpeaking(true);
+      if (speakingTimeout) clearTimeout(speakingTimeout);
+
+      const ms = Math.max(250, Math.ceil((nextPlayTime - audioCtx.currentTime) * 1000));
+      speakingTimeout = setTimeout(() => setSpeaking(false), ms);
     }
 
     async function getSignedUrl() {
@@ -181,21 +196,30 @@
       };
 
       micSource.connect(micProc);
-      micProc.connect(micCtx.destination); // necessário para o processor rodar
+
+      // ✅ Não tocar microfone no speaker: conecta com gain 0
+      micZeroGain = micCtx.createGain();
+      micZeroGain.gain.value = 0;
+      micProc.connect(micZeroGain);
+      micZeroGain.connect(micCtx.destination);
     }
 
     function stopAll() {
       rodando = false;
       setSpeaking(false);
 
+      // ✅ reseta fila para não “carregar” áudio antigo
+      nextPlayTime = 0;
+
       try { if (ws) ws.close(); } catch(e) {}
       ws = null;
 
       if (micProc) { try { micProc.disconnect(); } catch(e) {} }
       if (micSource) { try { micSource.disconnect(); } catch(e) {} }
+      if (micZeroGain) { try { micZeroGain.disconnect(); } catch(e) {} }
       if (micCtx) { try { micCtx.close(); } catch(e) {} }
 
-      micProc = micSource = micCtx = null;
+      micProc = micSource = micZeroGain = micCtx = null;
 
       if (micStream) {
         micStream.getTracks().forEach(t => t.stop());
@@ -218,7 +242,6 @@
         setStatus("microfone...");
         await startMicAndSend();
 
-        // (opcional) variáveis dinâmicas pro agente (se você usar no prompt do agent)
         ws.send(JSON.stringify({
           type: "conversation_initiation_client_data",
           dynamic_variables: { site: "PITE" }
@@ -230,14 +253,10 @@
       ws.onmessage = (ev) => {
         const msg = JSON.parse(ev.data);
 
-        // áudio do agente
         if (msg.type === "audio" && msg.audio_event?.audio_base_64) {
           const u8 = fromBase64(msg.audio_event.audio_base_64);
           playPcm16(u8, 16000);
         }
-
-        // (opcional) para debug
-        // if (msg.type === "agent_response") console.log(msg.agent_response_event?.agent_response);
       };
 
       ws.onerror = (e) => {

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Agente PITE</title>
+  <title>Agente PITE (Streaming)</title>
 
   <style>
     html, body { margin: 0; padding: 0; height: 100%; }
@@ -39,12 +39,12 @@
       filter: drop-shadow(0 10px 18px rgba(0,0,0,0.25));
     }
 
-    /* Botão: sempre acima de tudo */
-    #btnAudioAba {
+    /* Botão */
+    #btnCall {
       position: fixed;
       top: 24px;
       left: 24px;
-      z-index: 9999999999; /* acima de qualquer iframe/widget */
+      z-index: 2147483647;
       padding: 10px 14px;
       border: 0;
       border-radius: 12px;
@@ -52,194 +52,216 @@
       cursor: pointer;
       background: rgba(255,255,255,0.92);
       box-shadow: 0 10px 18px rgba(0,0,0,0.15);
-      pointer-events: auto !important;
       -webkit-tap-highlight-color: transparent;
     }
-    #btnAudioAba small{
-      display:block;
-      font-weight: 400;
-      margin-top: 4px;
-      opacity: .75;
-    }
 
-    elevenlabs-convai{
-      position: fixed !important;
-      right: 24px;
-      bottom: 24px;
-      z-index: 2147482000;
-      display: block !important;
-      min-width: 340px;
-      min-height: 120px;
-      pointer-events: auto;
+    #status {
+      position: fixed;
+      top: 76px;
+      left: 24px;
+      z-index: 2147483647;
+      padding: 8px 12px;
+      border-radius: 10px;
+      background: rgba(0,0,0,0.55);
+      color: #fff;
+      font-size: 12px;
+      max-width: 340px;
     }
 
     @media (max-width: 480px){
       #piteAvatar{ top: 12px; right: 12px; width: 140px; }
-      #btnAudioAba{ top: 12px; left: 12px; padding: 10px 12px; }
-      elevenlabs-convai{ right: 12px; bottom: 12px; min-width: 280px; }
-    }
-
-    /* vídeo oculto (mantém stream vivo em alguns browsers) */
-    #hiddenVideo {
-      position: fixed;
-      width: 1px;
-      height: 1px;
-      opacity: 0;
-      pointer-events: none;
-      left: -9999px;
-      top: -9999px;
+      #btnCall{ top: 12px; left: 12px; padding: 10px 12px; }
+      #status{ top: 60px; left: 12px; max-width: 280px; }
     }
   </style>
 </head>
 
 <body>
   <img id="piteAvatar" src="pitepiscando.gif" alt="Avatar PITE" />
-
-  <button id="btnAudioAba" type="button">
-    🎧 Ativar detecção do áudio da aba
-    <small>Selecione “Esta guia” e marque “Compartilhar áudio”.</small>
-  </button>
-
-  <elevenlabs-convai agent-id="agent_7501kc0b1hvaeymt039z1862ym4f"></elevenlabs-convai>
-  <video id="hiddenVideo" muted playsinline></video>
-
-  <script src="https://unpkg.com/@elevenlabs/convai-widget-embed" defer></script>
+  <button id="btnCall" type="button">🎙️ Iniciar conversa</button>
+  <div id="status">Status: parado</div>
 
   <script>
     const GIF_FALANDO = "pitebocaberta.gif";
     const GIF_PARADO  = "pitepiscando.gif";
 
-    const LIMIAR_VOLUME = 18;
-    const HOLD_MS = 450;
-
     const avatar = document.getElementById("piteAvatar");
-    const btn = document.getElementById("btnAudioAba");
-    const hiddenVideo = document.getElementById("hiddenVideo");
+    const btn = document.getElementById("btnCall");
+    const statusEl = document.getElementById("status");
 
-    let audioContext, analyser, dataArray;
-    let falando = false;
-    let ultimoSomEm = 0;
+    let ws = null;
 
-    // estado da captura
-    let streamAtual = null;
+    // mic
+    let micStream = null;
+    let micCtx = null;
+    let micSource = null;
+    let micProc = null;
+
+    // player
+    let audioCtx = null;
+    let speakingTimeout = null;
     let rodando = false;
 
-    function setAvatarFalando(isFalando){
-      if (isFalando === falando) return;
-      falando = isFalando;
-      avatar.src = falando ? GIF_FALANDO : GIF_PARADO;
+    function setStatus(t){ statusEl.textContent = "Status: " + t; }
+
+    function setSpeaking(on) {
+      avatar.src = on ? GIF_FALANDO : GIF_PARADO;
+      if (speakingTimeout) clearTimeout(speakingTimeout);
+      if (on) speakingTimeout = setTimeout(() => setSpeaking(false), 700);
     }
 
-    function atualizarBotao(){
-      if (rodando) {
-        btn.innerHTML = `⛔ Parar detecção (áudio da aba)
-          <small>Clique para encerrar o compartilhamento.</small>`;
-      } else {
-        btn.innerHTML = `🎧 Ativar detecção do áudio da aba
-          <small>Selecione “Esta guia” e marque “Compartilhar áudio”.</small>`;
+    function floatTo16BitPCM(float32) {
+      const buf = new ArrayBuffer(float32.length * 2);
+      const view = new DataView(buf);
+      for (let i = 0; i < float32.length; i++) {
+        let s = Math.max(-1, Math.min(1, float32[i]));
+        view.setInt16(i*2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
       }
+      return new Uint8Array(buf);
     }
 
-    function pararCaptura(){
+    function toBase64(u8) {
+      let s = "";
+      for (let i=0;i<u8.length;i++) s += String.fromCharCode(u8[i]);
+      return btoa(s);
+    }
+
+    function fromBase64(b64) {
+      const bin = atob(b64);
+      const u8 = new Uint8Array(bin.length);
+      for (let i=0;i<bin.length;i++) u8[i] = bin.charCodeAt(i);
+      return u8;
+    }
+
+    function playPcm16(u8, sampleRate = 16000) {
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+      const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+      const f32 = new Float32Array(u8.byteLength / 2);
+      for (let i=0;i<f32.length;i++) f32[i] = dv.getInt16(i*2, true) / 0x8000;
+
+      const buf = audioCtx.createBuffer(1, f32.length, sampleRate);
+      buf.copyToChannel(f32, 0);
+
+      const src = audioCtx.createBufferSource();
+      src.buffer = buf;
+      src.connect(audioCtx.destination);
+      src.start();
+
+      setSpeaking(true);
+    }
+
+    async function getSignedUrl() {
+      const r = await fetch("/api/token", { cache: "no-store" });
+      if (!r.ok) throw new Error(await r.text());
+      const j = await r.json();
+      if (!j.signed_url) throw new Error("signed_url não veio do /api/token");
+      return j.signed_url;
+    }
+
+    async function startMicAndSend() {
+      micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+      // muitos devices usam 48k, faremos downsample simples p/ 16k
+      micCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
+      micSource = micCtx.createMediaStreamSource(micStream);
+      micProc = micCtx.createScriptProcessor(2048, 1, 1);
+
+      micProc.onaudioprocess = (e) => {
+        if (!ws || ws.readyState !== 1) return;
+
+        const input = e.inputBuffer.getChannelData(0);
+        const ratio = micCtx.sampleRate / 16000; // ex: 3
+        const outLen = Math.floor(input.length / ratio);
+        const down = new Float32Array(outLen);
+        for (let i=0;i<outLen;i++) down[i] = input[Math.floor(i*ratio)];
+
+        const pcm16 = floatTo16BitPCM(down);
+        ws.send(JSON.stringify({ user_audio_chunk: toBase64(pcm16) }));
+      };
+
+      micSource.connect(micProc);
+      micProc.connect(micCtx.destination); // necessário para o processor rodar
+    }
+
+    function stopAll() {
       rodando = false;
-      setAvatarFalando(false);
+      setSpeaking(false);
 
-      if (streamAtual) {
-        streamAtual.getTracks().forEach(t => t.stop());
-        streamAtual = null;
-      }
-      if (audioContext) {
-        try { audioContext.close(); } catch(e) {}
-        audioContext = null;
-      }
-      analyser = null;
-      dataArray = null;
+      try { if (ws) ws.close(); } catch(e) {}
+      ws = null;
 
-      hiddenVideo.srcObject = null;
-      atualizarBotao();
+      if (micProc) { try { micProc.disconnect(); } catch(e) {} }
+      if (micSource) { try { micSource.disconnect(); } catch(e) {} }
+      if (micCtx) { try { micCtx.close(); } catch(e) {} }
+
+      micProc = micSource = micCtx = null;
+
+      if (micStream) {
+        micStream.getTracks().forEach(t => t.stop());
+        micStream = null;
+      }
+
+      btn.textContent = "🎙️ Iniciar conversa";
+      setStatus("parado");
     }
 
-    function monitorarVolume(){
-      if (!rodando || !analyser) return;
+    async function startAll() {
+      rodando = true;
+      btn.textContent = "⛔ Parar conversa";
+      setStatus("conectando...");
 
-      analyser.getByteFrequencyData(dataArray);
+      const signedUrl = await getSignedUrl();
+      ws = new WebSocket(signedUrl);
 
-      let soma = 0;
-      for (let i = 0; i < dataArray.length; i++) soma += dataArray[i];
-      const volume = soma / dataArray.length;
+      ws.onopen = async () => {
+        setStatus("microfone...");
+        await startMicAndSend();
 
-      const agora = Date.now();
+        // (opcional) variáveis dinâmicas pro agente (se você usar no prompt do agent)
+        ws.send(JSON.stringify({
+          type: "conversation_initiation_client_data",
+          dynamic_variables: { site: "PITE" }
+        }));
 
-      if (volume > LIMIAR_VOLUME) {
-        ultimoSomEm = agora;
-        setAvatarFalando(true);
-      } else if (falando && (agora - ultimoSomEm) > HOLD_MS) {
-        setAvatarFalando(false);
-      }
+        setStatus("ativo (fale algo)");
+      };
 
-      requestAnimationFrame(monitorarVolume);
-    }
+      ws.onmessage = (ev) => {
+        const msg = JSON.parse(ev.data);
 
-    async function iniciarCapturaDaAba(){
-      // toggle: se já está rodando, para
-      if (rodando) {
-        pararCaptura();
-        return;
-      }
-
-      try {
-        // ✅ pedir VIDEO + AUDIO aumenta a chance de liberar “áudio da guia”
-        const stream = await navigator.mediaDevices.getDisplayMedia({
-          video: true,
-          audio: true
-        });
-
-        // se não veio áudio, não serve
-        if (!stream.getAudioTracks() || stream.getAudioTracks().length === 0) {
-          stream.getTracks().forEach(t => t.stop());
-          alert("Você compartilhou sem áudio. Selecione “Esta guia” e marque “Compartilhar áudio”.");
-          return;
+        // áudio do agente
+        if (msg.type === "audio" && msg.audio_event?.audio_base_64) {
+          const u8 = fromBase64(msg.audio_event.audio_base_64);
+          playPcm16(u8, 16000);
         }
 
-        streamAtual = stream;
+        // (opcional) para debug
+        // if (msg.type === "agent_response") console.log(msg.agent_response_event?.agent_response);
+      };
 
-        // manter stream vivo
-        hiddenVideo.srcObject = stream;
-        hiddenVideo.play().catch(() => {});
+      ws.onerror = (e) => {
+        console.error(e);
+        setStatus("erro");
+        stopAll();
+        alert("Erro ao conectar no agente (ver console).");
+      };
 
-        audioContext = new (window.AudioContext || window.webkitAudioContext)();
-        const source = audioContext.createMediaStreamSource(stream);
-
-        analyser = audioContext.createAnalyser();
-        analyser.fftSize = 512;
-        source.connect(analyser);
-
-        dataArray = new Uint8Array(analyser.frequencyBinCount);
-
-        // se o usuário parar o compartilhamento na UI do browser
-        stream.getTracks().forEach(track => {
-          track.onended = () => {
-            pararCaptura();
-          };
-        });
-
-        rodando = true;
-        atualizarBotao();
-        monitorarVolume();
-
-      } catch (err) {
-        console.error("Falha ao capturar áudio da aba:", err);
-        alert(
-          "Não foi possível capturar o áudio da aba.\n\n" +
-          "✅ Use Chrome/Edge no computador.\n" +
-          "✅ Selecione “Esta guia”.\n" +
-          "✅ Marque “Compartilhar áudio”."
-        );
-      }
+      ws.onclose = () => {
+        if (rodando) stopAll();
+      };
     }
 
-    atualizarBotao();
-    btn.addEventListener("click", iniciarCapturaDaAba);
+    btn.addEventListener("click", async () => {
+      try {
+        if (rodando) stopAll();
+        else await startAll();
+      } catch (err) {
+        console.error(err);
+        stopAll();
+        alert("Falhou: " + (err?.message || err));
+      }
+    });
   </script>
 </body>
 </html>

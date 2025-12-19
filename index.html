@@ -25,13 +25,13 @@
       pointer-events: none;
     }
 
-    /* ✅ Avatar – centro da página (maior) */
+    /* ✅ Avatar – centro da página */
     #piteAvatar {
       position: fixed;
       top: 50%;
       left: 50%;
       transform: translate(-50%, -50%);
-      width: 320px;              /* <-- maior (ajuste aqui se quiser) */
+      width: 320px; /* tamanho do robô */
       height: auto;
       z-index: 2147483000;
       pointer-events: none;
@@ -40,13 +40,22 @@
       filter: drop-shadow(0 14px 28px rgba(0,0,0,0.30));
     }
 
+    /* ✅ Controles abaixo do robô (centralizados) */
+    #controls {
+      position: fixed;
+      top: calc(50% + 220px); /* distancia abaixo do centro (ajuste fino aqui) */
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 2147483647;
+
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
     /* Botão */
     #btnCall {
-      position: fixed;
-      top: 24px;
-      left: 24px;
-      z-index: 2147483647;
-      padding: 10px 14px;
+      padding: 10px 16px;
       border: 0;
       border-radius: 12px;
       font-weight: 700;
@@ -54,36 +63,47 @@
       background: rgba(255,255,255,0.92);
       box-shadow: 0 10px 18px rgba(0,0,0,0.15);
       -webkit-tap-highlight-color: transparent;
+      white-space: nowrap;
     }
 
+    /* Status ao lado do botão */
     #status {
-      position: fixed;
-      top: 76px;
-      left: 24px;
-      z-index: 2147483647;
       padding: 8px 12px;
       border-radius: 10px;
       background: rgba(0,0,0,0.55);
       color: #fff;
       font-size: 12px;
-      max-width: 340px;
+      white-space: nowrap;
     }
 
     /* ✅ Responsivo */
     @media (max-width: 480px){
       #piteAvatar{
-        width: 240px;  /* menor no celular */
+        width: 240px;
       }
-      #btnCall{ top: 12px; left: 12px; padding: 10px 12px; }
-      #status{ top: 60px; left: 12px; max-width: 280px; }
+      #controls{
+        top: calc(50% + 170px);
+        gap: 10px;
+      }
+      #btnCall{
+        padding: 10px 14px;
+        border-radius: 12px;
+      }
+      #status{
+        font-size: 11px;
+      }
     }
   </style>
 </head>
 
 <body>
   <img id="piteAvatar" src="pitepiscando.gif" alt="Avatar PITE" />
-  <button id="btnCall" type="button">🎙️ Iniciar conversa</button>
-  <div id="status">Status: parado</div>
+
+  <!-- ✅ Botão + status abaixo do robô -->
+  <div id="controls">
+    <button id="btnCall" type="button">🎙️ Iniciar conversa</button>
+    <div id="status">Status: parado</div>
+  </div>
 
   <script>
     const GIF_FALANDO = "pitebocaberta.gif";
@@ -153,7 +173,7 @@
       buf.copyToChannel(f32, 0);
 
       const now = audioCtx.currentTime;
-      if (nextPlayTime < now) nextPlayTime = now; // se houve gap, recomeça fila
+      if (nextPlayTime < now) nextPlayTime = now;
 
       const src = audioCtx.createBufferSource();
       src.buffer = buf;
@@ -162,7 +182,6 @@
       src.start(nextPlayTime);
       nextPlayTime += buf.duration;
 
-      // mantém o avatar "falando" enquanto tiver áudio na fila
       setSpeaking(true);
       if (speakingTimeout) clearTimeout(speakingTimeout);
 
@@ -181,7 +200,6 @@
     async function startMicAndSend() {
       micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
-      // muitos devices usam 48k, faremos downsample simples p/ 16k
       micCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
       micSource = micCtx.createMediaStreamSource(micStream);
       micProc = micCtx.createScriptProcessor(2048, 1, 1);
@@ -190,7 +208,7 @@
         if (!ws || ws.readyState !== 1) return;
 
         const input = e.inputBuffer.getChannelData(0);
-        const ratio = micCtx.sampleRate / 16000; // ex: 3
+        const ratio = micCtx.sampleRate / 16000;
         const outLen = Math.floor(input.length / ratio);
         const down = new Float32Array(outLen);
         for (let i=0;i<outLen;i++) down[i] = input[Math.floor(i*ratio)];
@@ -201,7 +219,6 @@
 
       micSource.connect(micProc);
 
-      // ✅ Não tocar microfone no speaker: conecta com gain 0
       micZeroGain = micCtx.createGain();
       micZeroGain.gain.value = 0;
       micProc.connect(micZeroGain);
@@ -211,8 +228,6 @@
     function stopAll() {
       rodando = false;
       setSpeaking(false);
-
-      // ✅ reseta fila para não “carregar” áudio antigo
       nextPlayTime = 0;
 
       try { if (ws) ws.close(); } catch(e) {}
@@ -288,6 +303,3 @@
   </script>
 </body>
 </html>
-
-
-
